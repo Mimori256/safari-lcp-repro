@@ -4,7 +4,15 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "repro": "node run.js"
+    "repro": "node run.js",
+    "repro:tp": "BROWSER=safari-tp node run.js",
+    "repro:chrome": "BROWSER=chrome node run.js",
+    "env": "bash scripts/mac-env.sh",
+    "check": "bash scripts/mac-check.sh",
+    "open": "node server.js --open"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "selenium-webdriver": "4.27.0"

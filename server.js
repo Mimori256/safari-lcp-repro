@@ -76,5 +76,13 @@ export const startServer = (port = 0) =>
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = await startServer(8080);
-  console.log(`http://localhost:${server.address().port}/?delay=500`);
+  const url = `http://localhost:${server.address().port}/?delay=500`;
+  console.log(url);
+  console.log('Variants: /?variant=<name>&delay=500  (see run.js for names)');
+  console.log('The result is in window.__result (open the Web Inspector console).');
+  // `npm run open` also opens the page in Safari (macOS only).
+  if (process.argv.includes('--open')) {
+    const {spawn} = await import('node:child_process');
+    spawn('open', ['-a', 'Safari', url], {stdio: 'ignore'});
+  }
 }

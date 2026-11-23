@@ -9,6 +9,7 @@
 //   shared: one browser session, pages loaded one after another
 //   fresh:  a brand-new browser session for every single load
 import {Builder} from 'selenium-webdriver';
+import safari from 'selenium-webdriver/safari.js';
 import {startServer} from './server.js';
 
 const DELAY = 500;
@@ -30,7 +31,17 @@ const INFORMATIONAL = new Set(['svg-image']);
 
 const server = await startServer(0);
 const base = `http://localhost:${server.address().port}`;
-const newDriver = () => new Builder().forBrowser(BROWSER).build();
+// BROWSER=safari-tp runs Safari Technology Preview (needs it installed).
+const newDriver = () => {
+  const builder = new Builder();
+  if (BROWSER === 'safari-tp') {
+    return builder
+      .forBrowser('safari')
+      .setSafariOptions(new safari.Options().setTechnologyPreview(true))
+      .build();
+  }
+  return builder.forBrowser(BROWSER).build();
+};
 
 // Loads one variant and returns a compact description of what happened.
 const runOne = async (driver, variant) => {
