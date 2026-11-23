@@ -23,3 +23,11 @@ npm run repro
 Or push and look at the `Safari LCP repro` workflow (matrix: macos-15, macos-26).
 Compare the printed `Browser:` line and the LCP entries between runs.
 `delay=0` is a control and does not affect the exit code.
+
+## Try it by hand on a Mac (GitHub Pages)
+
+Open <https://mimori256.github.io/safari-lcp-repro/> in Safari and press
+**Run all variants**. No server is needed: the image is generated with `<canvas>`
+and inserted after a delay. Do not scroll or click while it runs (scroll/input
+legitimately stops LCP reporting). The summary page has a block you can copy into a
+bug report. Note your macOS version and the Safari build (Safari > About Safari).

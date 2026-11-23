@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safari LCP repro</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; line-height: 1.5; }
+  pre { background: #f4f4f4; padding: 8px; overflow: auto; font-size: 12px; }
+  table { border-collapse: collapse; }
+  td, th { border: 1px solid #aaa; padding: 2px 8px; text-align: left; }
+  .pass { color: #0a7d2c; font-weight: bold; }
+  .fail { color: #c0182d; font-weight: bold; }
+  ul.variants { columns: 2; }
+</style>
+</head>
+<body>
+<script>
+// Static, server-less repro for "LCP never updates after the first paint" on
+// Safari 27.2 / macOS 26.7.2. The image is generated with <canvas> and inserted
+// after a delay, to emulate a late-loading image without needing a server.
+//
+//   /                      landing page
+//   /?variant=img          run one variant once
+//   /?variant=img&run=all  (started from the landing page) run every variant N times
+//   /?summary=1            summary of the last run-all
+const VARIANTS = [
+  'img', 'img-elementtiming', 'img-nosize', 'img-decode-then-insert',
+  'img-parsed', 'bg', 'svg-image', 'text',
+];
+// svg-image fails on every Safari tried so far (also on macOS 15): informational.
+const INFORMATIONAL = new Set(['svg-image']);
+const P = new URLSearchParams(location.search);
+const variant = P.get('variant');
+const delay = Number(P.get('delay') || 500);
+const reps = Number(P.get('reps') || 3);
+const runAll = P.get('run') === 'all';
+const STORE = 'lcp-repro-runs';
+
+const store = {
+  get() { try { return JSON.parse(sessionStorage.getItem(STORE) || '[]'); } catch { return []; } },
+  set(v) { try { sessionStorage.setItem(STORE, JSON.stringify(v)); } catch {} },
+  clear() { try { sessionStorage.removeItem(STORE); } catch {} },
+};
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const frames = (n) => new Promise((r) => { const f = (i) => i ? requestAnimationFrame(() => f(i - 1)) : r(); f(n); });
+const safariVersion = () => (navigator.userAgent.match(/Version\/([\d.]+)/) || [])[1] || 'unknown';
+
+const envInfo = () => ({
+  userAgent: navigator.userAgent,
+  safariVersion: safariVersion(),
+  visibilityState: document.visibilityState,
+  hasFocus: document.hasFocus(),
+  devicePixelRatio,
+  viewport: `${innerWidth}x${innerHeight}`,
+  supportsLCP: PerformanceObserver.supportedEntryTypes.includes('largest-contentful-paint'),
+});
+
+// ---------------------------------------------------------------- landing
+if (!variant && !P.get('summary')) {
+  document.title = 'Safari LCP repro';
+  document.body.innerHTML = `
+    <h1>Safari LCP repro</h1>
+    <p>Does <code>largest-contentful-paint</code> keep updating after the first paint
+    (<code>&lt;h1&gt;</code>) once a larger image or text appears?
+    On macOS 26.7.2 + Safari 27.2 (CI runner) it does <b>not</b>; on macOS 15.8.2 + Safari 27.2 it does.</p>
+    <p>Source: <a href="https://github.com/Mimori256/safari-lcp-repro">Mimori256/safari-lcp-repro</a></p>
+    <h2>Environment</h2>
+    <pre id="env"></pre>
+    <h2>Run</h2>
+    <p><button id="all" style="font-size:16px;padding:6px 14px">Run all variants (${reps}x each)</button></p>
+    <p>Or a single variant (each link is a fresh page load):</p>
+    <ul class="variants">${VARIANTS.map((v) => `<li><a href="?variant=${v}&delay=${delay}">${v}</a></li>`).join('')}</ul>
+    <p>Tip: open this page in a <b>new window or tab</b> and do not scroll or click while a run is in progress
+    (scroll/input legitimately stops LCP reporting).</p>
+    <h2>Please also note</h2>
+    <ul>
+      <li>macOS version (Apple menu &gt; About This Mac)</li>
+      <li>Safari build (Safari &gt; About Safari)</li>
+    </ul>`;
+  document.getElementById('env').textContent = JSON.stringify(envInfo(), null, 2);
+  document.getElementById('all').onclick = () => {
+    store.clear();
+    location.href = `?variant=${VARIANTS[0]}&run=all&reps=${reps}&delay=${delay}`;
+  };
+}
+
+// ---------------------------------------------------------------- summary
+else if (P.get('summary')) {
+  const runs = store.get();
+  const by = {};
+  for (const r of runs) {
+    const s = (by[r.variant] ??= {pass: 0, total: 0, seq: '', tags: new Set()});
+    s.total++; if (r.ok) s.pass++;
+    s.seq += r.ok ? 'P' : 'F';
+    s.tags.add(r.tags);
+  }
+  const failed = VARIANTS.some((v) => !INFORMATIONAL.has(v) && by[v] && by[v].pass !== by[v].total);
+  document.title = 'Safari LCP repro - summary';
+  const lines = VARIANTS.filter((v) => by[v]).map((v) =>
+    `${v.padEnd(24)} ${by[v].pass}/${by[v].total} ${by[v].seq.padEnd(reps + 1)} LCP: ${[...by[v].tags].join(' | ')}`);
+  const text = [
+    `RESULT: ${failed ? 'FAIL' : 'PASS'}`,
+    `Safari ${safariVersion()}`,
+    navigator.userAgent,
+    ...lines,
+  ].join('\n');
+  document.body.innerHTML = `
+    <h1>Summary: <span class="${failed ? 'fail' : 'pass'}">${failed ? 'FAIL' : 'PASS'}</span></h1>
+    <p>FAIL = the final LCP was still the <code>&lt;h1&gt;</code> (the image / large text was never reported).</p>
+    <table><tr><th>variant</th><th>pass</th><th>order</th><th>LCP entries (element tags)</th></tr>
+    ${VARIANTS.filter((v) => by[v]).map((v) => `
+      <tr><td>${v}${INFORMATIONAL.has(v) ? ' (info)' : ''}</td><td>${by[v].pass}/${by[v].total}</td>
+      <td>${by[v].seq}</td><td>${esc([...by[v].tags].join(' | '))}</td></tr>`).join('')}
+    </table>
+    <h2>Copy this into the bug report</h2>
+    <pre id="txt"></pre>
+    <p><button id="copy">Copy</button> <a href="./">Back</a></p>`;
+  document.getElementById('txt').textContent = text;
+  document.getElementById('copy').onclick = () => navigator.clipboard?.writeText(text);
+}
+
+// ---------------------------------------------------------------- one variant
+else {
+  document.title = `Safari LCP repro - ${variant}`;
+  document.body.innerHTML = `
+    <h1>LCP Test</h1>
+    <div id="slot"></div>
+    <p>Text below the image</p>`;
+  const slot = document.getElementById('slot');
+
+  // Record scroll/input events: per spec they legitimately stop LCP reporting.
+  const stopEvents = [];
+  for (const type of ['scroll', 'wheel', 'keydown', 'pointerdown', 'mousedown', 'click', 'touchstart']) {
+    addEventListener(type, (e) => stopEvents.push({type, isTrusted: e.isTrusted, t: Math.round(performance.now())}),
+      {capture: true, passive: true});
+  }
+
+  const describe = (e) => ({
+    tag: e.element ? e.element.tagName : null,
+    id: e.id, url: e.url, size: e.size,
+    startTime: e.startTime, renderTime: e.renderTime, loadTime: e.loadTime,
+    presentationTime: e.presentationTime ?? null,
+  });
+  const lcpEntries = [];
+  new PerformanceObserver((list) => {
+    for (const e of list.getEntries()) lcpEntries.push(describe(e));
+  }).observe({type: 'largest-contentful-paint', buffered: true});
+
+  // A noisy 300x300 PNG (noise keeps it above the "low content" byte heuristic).
+  const makeImageUrl = () => new Promise((resolve) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 300;
+    const g = c.getContext('2d');
+    g.fillStyle = '#3399ff';
+    g.fillRect(0, 0, 300, 300);
+    for (let i = 0; i < 600; i++) {
+      g.fillStyle = `hsl(${(i * 37) % 360} 70% 50%)`;
+      g.fillRect((i * 53) % 290, (i * 97) % 290, 12, 12);
+    }
+    c.toBlob((b) => resolve(URL.createObjectURL(b)), 'image/png');
+  });
+
+  let target;
+  const variants = {
+    img(url) { target = new Image(300, 300); target.src = url; slot.append(target); },
+    'img-elementtiming'(url) {
+      target = new Image(300, 300); target.setAttribute('elementtiming', 'main-image');
+      target.src = url; slot.append(target);
+    },
+    'img-nosize'(url) { target = new Image(); target.src = url; slot.append(target); },
+    async 'img-decode-then-insert'(url) {
+      target = new Image(); target.src = url; await target.decode(); slot.append(target);
+    },
+    'img-parsed'(url) {
+      slot.innerHTML = `<img width="300" height="300" src="${url}">`; target = slot.firstElementChild;
+    },
+    bg(url) {
+      target = document.createElement('div');
+      target.style.cssText = `width:300px;height:300px;background:url(${url})`;
+      slot.append(target);
+    },
+    'svg-image'(url) {
+      slot.innerHTML = `<svg width="300" height="300"><image width="300" height="300" href="${url}"/></svg>`;
+      target = slot.querySelector('image');
+    },
+    text() {
+      target = document.createElement('p');
+      target.style.cssText = 'font-size:60px';
+      target.textContent = 'Big text';
+      slot.append(target);
+    },
+  };
+
+  (async () => {
+    if (!variants[variant]) { document.body.textContent = `Unknown variant: ${variant}`; return; }
+    const url = await makeImageUrl();
+    await sleep(delay);                 // emulate a late-loading image
+    await variants[variant](url);
+    await sleep(1500);                  // let the browser paint and queue LCP entries
+    await frames(2);
+
+    // Snapshot everything BEFORE rendering the report: the report itself is
+    // large text and would otherwise become an LCP candidate.
+    const entries = lcpEntries.slice();
+    const freshTags = await new Promise((resolve) => {
+      const po = new PerformanceObserver((l) => { resolve(l.getEntries().map((e) => e.element?.tagName ?? null)); po.disconnect(); });
+      po.observe({type: 'largest-contentful-paint', buffered: true});
+      setTimeout(() => resolve(null), 1000);
+    });
+    const r = target.getBoundingClientRect();
+    const last = entries.at(-1);
+    const ok = last != null && last.tag !== 'H1' && last.startTime > delay;
+    const tags = entries.map((e) => e.tag).join(' > ') || '(none)';
+    const result = {
+      variant, delay, ok, env: envInfo(),
+      lcpEntries: entries,
+      freshObserverTags: freshTags,
+      stopEvents,
+      target: {
+        tag: target.tagName, complete: target.complete ?? null, naturalWidth: target.naturalWidth ?? null,
+        rect: {x: r.x, y: r.y, width: r.width, height: r.height},
+        checkVisibility: target.checkVisibility?.() ?? null,
+      },
+      paint: performance.getEntriesByType('paint').map((p) => ({name: p.name, startTime: p.startTime})),
+    };
+    window.__result = result; window.__done = true;
+
+    if (runAll) {
+      const runs = store.get();
+      runs.push({variant, ok, tags});
+      store.set(runs);
+      const total = VARIANTS.length * reps;
+      const nextVariant = VARIANTS[runs.length % VARIANTS.length];
+      await sleep(200);
+      location.href = runs.length < total
+        ? `?variant=${nextVariant}&run=all&reps=${reps}&delay=${delay}`
+        : '?summary=1';
+      return;
+    }
+
+    const panel = document.createElement('section');
+    panel.innerHTML = `
+      <h2>${esc(variant)}: <span class="${ok ? 'pass' : 'fail'}">${ok ? 'PASS' : 'FAIL'}</span></h2>
+      <p>LCP entries (element tags): <b>${esc(tags)}</b> &mdash; expected the last one not to be H1.</p>
+      <p>Scroll/input events seen: ${stopEvents.length}</p>
+      <pre></pre>
+      <p><a href="./">Back</a></p>`;
+    panel.querySelector('pre').textContent = JSON.stringify(result, null, 2);
+    document.body.append(panel);
+  })();
+}
+</script>
+</body>
+</html>
