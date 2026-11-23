@@ -3,10 +3,15 @@
 <title>Safari LCP repro</title>
 <body>
   <h1>LCP Test</h1>
-  <p><img id="img" width="300" height="300"></p>
+  <div id="slot"></div>
   <p>Text below the image</p>
   <script>
-    const delay = new URLSearchParams(location.search).get('delay') || '500';
+    const params = new URLSearchParams(location.search);
+    const delay = Number(params.get('delay') || 500);
+    const variant = params.get('variant') || 'img';
+    const src = () => `/img.png?delay=${delay}&t=${Date.now()}`;
+    const slot = document.getElementById('slot');
+
     const lcpEntries = [];
     const describe = (e) => ({
       tag: e.element ? e.element.tagName : null,
@@ -18,26 +23,120 @@
       loadTime: e.loadTime,
       presentationTime: e.presentationTime ?? null,
     });
-
     new PerformanceObserver((list) => {
       for (const e of list.getEntries()) lcpEntries.push(describe(e));
     }).observe({type: 'largest-contentful-paint', buffered: true});
 
-    const img = document.getElementById('img');
-    img.addEventListener('load', async () => {
-      // Wait for the image to be painted, then a bit longer for LCP to be queued.
+    // Each variant puts a 300x300 image-ish thing on the page. All of them
+    // should be a larger LCP candidate than the <h1>.
+    let target; // the element we expect to become the LCP
+    const variants = {
+      // Same as the web-vitals fixture (plus explicit size).
+      img() {
+        target = document.createElement('img');
+        target.width = target.height = 300;
+        target.src = src();
+        slot.append(target);
+      },
+      // The web-vitals fixture also sets elementtiming.
+      'img-elementtiming'() {
+        target = document.createElement('img');
+        target.width = target.height = 300;
+        target.setAttribute('elementtiming', 'main-image');
+        target.src = src();
+        slot.append(target);
+      },
+      // No width/height attributes: size comes only from the loaded image.
+      'img-nosize'() {
+        target = document.createElement('img');
+        target.src = src();
+        slot.append(target);
+      },
+      // Image decoded before being attached to the DOM.
+      async 'img-decode-then-insert'() {
+        target = new Image();
+        target.src = src();
+        await target.decode();
+        slot.append(target);
+      },
+      // Inline-markup <img> parsed by the HTML parser (not created via DOM APIs).
+      'img-parsed'() {
+        slot.innerHTML = `<img width="300" height="300" src="${src()}">`;
+        target = slot.firstElementChild;
+      },
+      // CSS background-image.
+      bg() {
+        target = document.createElement('div');
+        target.style.cssText = `width:300px;height:300px;background:url(${src()})`;
+        slot.append(target);
+      },
+      // SVG <image>.
+      'svg-image'() {
+        slot.innerHTML = `<svg width="300" height="300"><image width="300" height="300" href="${src()}"/></svg>`;
+        target = slot.querySelector('image');
+      },
+      // Control: big text. Not image-related, should always be an LCP candidate.
+      text() {
+        target = document.createElement('p');
+        target.style.cssText = 'font-size:60px';
+        target.textContent = 'Big text';
+        setTimeout(() => slot.append(target), delay);
+      },
+    };
+
+    // Diagnostics: is the image really loaded, laid out and visible?
+    const diagnose = () => {
+      if (!target) return null;
+      const r = target.getBoundingClientRect();
+      const cs = getComputedStyle(target);
+      return {
+        tag: target.tagName,
+        complete: target.complete ?? null,
+        naturalWidth: target.naturalWidth ?? null,
+        naturalHeight: target.naturalHeight ?? null,
+        currentSrc: target.currentSrc ?? null,
+        rect: {x: r.x, y: r.y, width: r.width, height: r.height},
+        checkVisibility: target.checkVisibility?.() ?? null,
+        display: cs.display,
+        visibility: cs.visibility,
+        opacity: cs.opacity,
+        isConnected: target.isConnected,
+        inViewport:
+          r.bottom > 0 && r.right > 0 &&
+          r.top < innerHeight && r.left < innerWidth,
+      };
+    };
+
+    (async () => {
+      await variants[variant]();
+      // Wait for the load (delay) plus a couple of frames and a safety margin.
+      await new Promise((r) => setTimeout(r, delay + 1500));
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise((r) => setTimeout(r, 1000));
       window.__result = {
-        delay: Number(delay),
+        variant,
+        delay,
         userAgent: navigator.userAgent,
+        environment: {
+          visibilityState: document.visibilityState,
+          hasFocus: document.hasFocus(),
+          devicePixelRatio: devicePixelRatio,
+          viewport: {width: innerWidth, height: innerHeight},
+          screen: {width: screen.width, height: screen.height},
+        },
         supportedEntryTypes: PerformanceObserver.supportedEntryTypes,
+        target: diagnose(),
+        // Resource Timing entry for the image: did it load at all?
+        resource: performance
+          .getEntriesByType('resource')
+          .filter((e) => e.name.includes('/img.png'))
+          .map((e) => ({
+            name: e.name,
+            startTime: e.startTime,
+            responseEnd: e.responseEnd,
+          })),
         lcpEntries,
       };
-      // Don't render the result into the DOM: it would become the largest
-      // contentful element and pollute the LCP entries.
       window.__done = true;
-    });
-    img.src = `/img.png?delay=${delay}&t=${Date.now()}`;
+    })();
   </script>
 </body>

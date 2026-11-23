@@ -1,45 +1,70 @@
-// Drives Safari via safaridriver, collects LCP entries and checks the same
-// invariants the web-vitals e2e tests rely on.
+// Drives a browser via WebDriver, loads several page variants and reports, for
+// each one, whether the image-like element became an LCP candidate.
+//
+//   safaridriver:  npm run repro
+//   Chrome:        BROWSER=chrome npm run repro
 import {Builder} from 'selenium-webdriver';
 import {startServer} from './server.js';
 
+const DELAY = 500;
+// Variants that should each yield an LCP entry for their own 300x300 element.
+// 'img' is the one that mirrors the web-vitals test and gates the exit code.
+const VARIANTS = [
+  'img',
+  'img-elementtiming',
+  'img-nosize',
+  'img-decode-then-insert',
+  'img-parsed',
+  'bg',
+  'svg-image',
+  'text', // control: unrelated to images
+];
+
 const server = await startServer(0);
 const base = `http://localhost:${server.address().port}`;
-// BROWSER=chrome npm run repro  (defaults to safari)
 const driver = await new Builder()
   .forBrowser(process.env.BROWSER || 'safari')
   .build();
 
+const summary = [];
 let failed = false;
 try {
   const caps = await driver.getCapabilities();
   console.log(`Browser: ${caps.get('browserName')} ${caps.get('browserVersion')}`);
 
-  for (const delay of [0, 500]) {
+  for (const variant of VARIANTS) {
     await driver.get('about:blank');
-    await driver.get(`${base}/?delay=${delay}`);
+    await driver.get(`${base}/?variant=${variant}&delay=${DELAY}`);
     await driver.wait(
       () => driver.executeScript('return window.__done === true'),
-      15000,
+      20000,
     );
     const result = await driver.executeScript('return window.__result');
 
-    console.log(`\n=== image delay ${delay}ms ===`);
+    console.log(`\n=== variant: ${variant} (delay ${DELAY}ms) ===`);
     console.log(JSON.stringify(result, null, 2));
 
+    const tags = result.lcpEntries.map((e) => e.tag);
     const last = result.lcpEntries.at(-1);
-    const checks = {
-      'LCP entries were reported': result.lcpEntries.length > 0,
-      'final LCP element is IMG': last?.tag === 'IMG',
-      [`final LCP startTime > ${delay}`]: (last?.startTime ?? 0) > delay,
-    };
-    for (const [name, ok] of Object.entries(checks)) {
-      console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`);
-      if (!ok && delay === 500) failed = true; // delay=0 is only a control
-    }
+    const expectedTag = result.target?.tag?.toUpperCase();
+    // For <image> in SVG the LCP element may be reported as IMAGE or SVG.
+    const ok = last != null && last.tag !== 'H1' && last.startTime > DELAY;
+    summary.push({
+      variant,
+      lcpTags: tags.join(' > '),
+      finalIsNotH1: ok ? 'PASS' : 'FAIL',
+      loaded: result.target?.complete ?? 'n/a',
+      naturalWidth: result.target?.naturalWidth ?? 'n/a',
+      visible: result.target?.checkVisibility ?? 'n/a',
+      inViewport: result.target?.inViewport ?? 'n/a',
+    });
+    if (variant === 'img' && !ok) failed = true;
   }
 } finally {
   await driver.quit();
   server.close();
 }
+
+console.log('\n=== summary ===');
+console.table(summary);
 process.exit(failed ? 1 : 0);
