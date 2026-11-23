@@ -35,10 +35,11 @@ const base = `http://localhost:${server.address().port}`;
 const newDriver = () => {
   const builder = new Builder();
   if (BROWSER === 'safari-tp') {
-    return builder
-      .forBrowser('safari')
-      .setSafariOptions(new safari.Options().setTechnologyPreview(true))
-      .build();
+    // selenium picks the TP safaridriver binary but still sends browserName
+    // "safari", which TP's driver rejects. Use its real name and bypass Builder.
+    const options = new safari.Options().setTechnologyPreview(true);
+    options.setBrowserName('Safari Technology Preview');
+    return safari.Driver.createSession(options);
   }
   return builder.forBrowser(BROWSER).build();
 };
