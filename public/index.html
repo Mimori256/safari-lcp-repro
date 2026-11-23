@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Safari LCP repro</title>
+<body>
+  <h1>LCP Test</h1>
+  <p><img id="img" width="300" height="300"></p>
+  <p>Text below the image</p>
+  <script>
+    const delay = new URLSearchParams(location.search).get('delay') || '500';
+    const lcpEntries = [];
+    const describe = (e) => ({
+      tag: e.element ? e.element.tagName : null,
+      id: e.id,
+      url: e.url,
+      size: e.size,
+      startTime: e.startTime,
+      renderTime: e.renderTime,
+      loadTime: e.loadTime,
+      presentationTime: e.presentationTime ?? null,
+    });
+
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) lcpEntries.push(describe(e));
+    }).observe({type: 'largest-contentful-paint', buffered: true});
+
+    const img = document.getElementById('img');
+    img.addEventListener('load', async () => {
+      // Wait for the image to be painted, then a bit longer for LCP to be queued.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise((r) => setTimeout(r, 1000));
+      window.__result = {
+        delay: Number(delay),
+        userAgent: navigator.userAgent,
+        supportedEntryTypes: PerformanceObserver.supportedEntryTypes,
+        lcpEntries,
+      };
+      // Don't render the result into the DOM: it would become the largest
+      // contentful element and pollute the LCP entries.
+      window.__done = true;
+    });
+    img.src = `/img.png?delay=${delay}&t=${Date.now()}`;
+  </script>
+</body>

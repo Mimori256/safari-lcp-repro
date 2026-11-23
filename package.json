@@ -1,0 +1,12 @@
+{
+  "name": "safari-lcp-repro",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "repro": "node run.js"
+  },
+  "dependencies": {
+    "selenium-webdriver": "4.27.0"
+  }
+}
