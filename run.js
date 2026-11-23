@@ -3,12 +3,17 @@
 //
 //   safaridriver:  npm run repro
 //   Chrome:        BROWSER=chrome npm run repro
+//   REPEAT=3 ...   number of repetitions per variant and mode (default 5)
+//
+// Two modes are compared, to tell "flaky" apart from "depends on session reuse":
+//   shared: one browser session, pages loaded one after another
+//   fresh:  a brand-new browser session for every single load
 import {Builder} from 'selenium-webdriver';
 import {startServer} from './server.js';
 
 const DELAY = 500;
-// Variants that should each yield an LCP entry for their own 300x300 element.
-// 'img' is the one that mirrors the web-vitals test and gates the exit code.
+const REPEAT = Number(process.env.REPEAT || 5);
+const BROWSER = process.env.BROWSER || 'safari';
 const VARIANTS = [
   'img',
   'img-elementtiming',
@@ -19,58 +24,91 @@ const VARIANTS = [
   'svg-image',
   'text', // control: unrelated to images
 ];
+// Known to fail on every Safari we tried (including macOS 15), so it is
+// reported but does not affect the exit code.
+const INFORMATIONAL = new Set(['svg-image']);
 
 const server = await startServer(0);
 const base = `http://localhost:${server.address().port}`;
-const driver = await new Builder()
-  .forBrowser(process.env.BROWSER || 'safari')
-  .build();
+const newDriver = () => new Builder().forBrowser(BROWSER).build();
 
-const summary = [];
-let failed = false;
+// Loads one variant and returns a compact description of what happened.
+const runOne = async (driver, variant) => {
+  await driver.get('about:blank');
+  await driver.get(`${base}/?variant=${variant}&delay=${DELAY}`);
+  await driver.wait(
+    () => driver.executeScript('return window.__done === true'),
+    20000,
+  );
+  const r = await driver.executeScript('return window.__result');
+  const last = r.lcpEntries.at(-1);
+  return {
+    tags: r.lcpEntries.map((e) => e.tag).join(' > ') || '(none)',
+    ok: last != null && last.tag !== 'H1' && last.startTime > DELAY,
+    stopEvents: r.stopEvents.filter((e) => e.type !== 'focus' && e.type !== 'doc:focus').length,
+    raw: r,
+  };
+};
+
+// stats[mode][variant] = {pass, total, seq: ['P'|'F'...]}
+const stats = {shared: {}, fresh: {}};
+const record = (mode, variant, ok) => {
+  const s = (stats[mode][variant] ??= {pass: 0, total: 0, seq: ''});
+  s.total++;
+  if (ok) s.pass++;
+  s.seq += ok ? 'P' : 'F';
+};
+
+let version = '';
 try {
-  const caps = await driver.getCapabilities();
-  console.log(`Browser: ${caps.get('browserName')} ${caps.get('browserVersion')}`);
+  // --- shared mode ---
+  const shared = await newDriver();
+  try {
+    version = `${(await shared.getCapabilities()).get('browserName')} ${(await shared.getCapabilities()).get('browserVersion')}`;
+    console.log(`Browser: ${version}`);
+    for (let i = 0; i < REPEAT; i++) {
+      for (const variant of VARIANTS) {
+        const res = await runOne(shared, variant);
+        record('shared', variant, res.ok);
+        console.log(`[shared #${i + 1}] ${variant}: ${res.ok ? 'PASS' : 'FAIL'}  LCP=${res.tags}  stopEvents=${res.stopEvents}`);
+      }
+    }
+  } finally {
+    await shared.quit();
+  }
 
-  for (const variant of VARIANTS) {
-    await driver.get('about:blank');
-    await driver.get(`${base}/?variant=${variant}&delay=${DELAY}`);
-    await driver.wait(
-      () => driver.executeScript('return window.__done === true'),
-      20000,
-    );
-    const result = await driver.executeScript('return window.__result');
-
-    console.log(`\n=== variant: ${variant} (delay ${DELAY}ms) ===`);
-    console.log(JSON.stringify(result, null, 2));
-
-    const tags = result.lcpEntries.map((e) => e.tag);
-    const last = result.lcpEntries.at(-1);
-    const expectedTag = result.target?.tag?.toUpperCase();
-    // For <image> in SVG the LCP element may be reported as IMAGE or SVG.
-    const ok = last != null && last.tag !== 'H1' && last.startTime > DELAY;
-    summary.push({
-      variant,
-      lcpTags: tags.join(' > '),
-      finalIsNotH1: ok ? 'PASS' : 'FAIL',
-      loaded: result.target?.complete ?? 'n/a',
-      naturalWidth: result.target?.naturalWidth ?? 'n/a',
-      visible: result.target?.checkVisibility ?? 'n/a',
-      inViewport: result.target?.inViewport ?? 'n/a',
-      freshObserver: result.freshObserverTags?.join(' > ') ?? 'timeout',
-      stopEvents:
-        result.stopEvents.map((e) => `${e.type}${e.isTrusted ? '' : '(untrusted)'}`).join(',') ||
-        'none',
-      rafCount: result.rafCount,
-      paint: result.paintEntries.map((p) => p.name).join(','),
-    });
-    if (variant === 'img' && !ok) failed = true;
+  // --- fresh mode ---
+  for (let i = 0; i < REPEAT; i++) {
+    for (const variant of VARIANTS) {
+      const driver = await newDriver();
+      try {
+        const res = await runOne(driver, variant);
+        record('fresh', variant, res.ok);
+        console.log(`[fresh  #${i + 1}] ${variant}: ${res.ok ? 'PASS' : 'FAIL'}  LCP=${res.tags}  stopEvents=${res.stopEvents}`);
+      } finally {
+        await driver.quit();
+      }
+    }
   }
 } finally {
-  await driver.quit();
   server.close();
 }
 
-console.log('\n=== summary ===');
-console.table(summary);
+console.log(`\n=== summary (${version}, ${REPEAT} repetitions) ===`);
+const rows = VARIANTS.map((variant) => ({
+  variant,
+  shared: `${stats.shared[variant].pass}/${stats.shared[variant].total}`,
+  'shared order': stats.shared[variant].seq,
+  fresh: `${stats.fresh[variant].pass}/${stats.fresh[variant].total}`,
+  'fresh order': stats.fresh[variant].seq,
+}));
+console.table(rows);
+
+// Fail if any non-informational variant failed even once, in either mode.
+const failed = VARIANTS.some(
+  (v) =>
+    !INFORMATIONAL.has(v) &&
+    ['shared', 'fresh'].some((m) => stats[m][v].pass !== stats[m][v].total),
+);
+console.log(failed ? 'RESULT: FAIL' : 'RESULT: PASS');
 process.exit(failed ? 1 : 0);
