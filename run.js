@@ -57,6 +57,12 @@ try {
       naturalWidth: result.target?.naturalWidth ?? 'n/a',
       visible: result.target?.checkVisibility ?? 'n/a',
       inViewport: result.target?.inViewport ?? 'n/a',
+      freshObserver: result.freshObserverTags?.join(' > ') ?? 'timeout',
+      stopEvents:
+        result.stopEvents.map((e) => `${e.type}${e.isTrusted ? '' : '(untrusted)'}`).join(',') ||
+        'none',
+      rafCount: result.rafCount,
+      paint: result.paintEntries.map((p) => p.name).join(','),
     });
     if (variant === 'img' && !ok) failed = true;
   }

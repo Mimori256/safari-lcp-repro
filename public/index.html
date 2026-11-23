@@ -27,6 +27,28 @@
       for (const e of list.getEntries()) lcpEntries.push(describe(e));
     }).observe({type: 'largest-contentful-paint', buffered: true});
 
+    // Per spec (LCP 4.1/4.2), trusted scroll or input events stop LCP reporting.
+    // Record them (with timestamps) to rule that out.
+    const stopEvents = [];
+    for (const type of [
+      'scroll', 'wheel', 'keydown', 'keyup', 'pointerdown', 'pointerup',
+      'mousedown', 'mouseup', 'click', 'touchstart', 'focus', 'resize',
+    ]) {
+      addEventListener(type, (e) => {
+        stopEvents.push({type, isTrusted: e.isTrusted, t: Math.round(performance.now())});
+      }, {capture: true, passive: true});
+      document.addEventListener(type, (e) => {
+        stopEvents.push({type: `doc:${type}`, isTrusted: e.isTrusted, t: Math.round(performance.now())});
+      }, {capture: true, passive: true});
+    }
+
+    // Count rendering updates to check that frames are really being produced.
+    let rafCount = 0;
+    (function tick() {
+      rafCount++;
+      requestAnimationFrame(tick);
+    })();
+
     // Each variant puts a 300x300 image-ish thing on the page. All of them
     // should be a larger LCP candidate than the <h1>.
     let target; // the element we expect to become the LCP
@@ -112,8 +134,25 @@
       // Wait for the load (delay) plus a couple of frames and a safety margin.
       await new Promise((r) => setTimeout(r, delay + 1500));
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // A brand-new observer with buffered:true: does the browser *have* more
+      // entries than the original observer was told about?
+      const freshTags = await new Promise((resolve) => {
+        const po = new PerformanceObserver((list) => {
+          resolve(list.getEntries().map((e) => e.element?.tagName ?? null));
+          po.disconnect();
+        });
+        po.observe({type: 'largest-contentful-paint', buffered: true});
+        setTimeout(() => resolve(null), 1000);
+      });
       window.__result = {
         variant,
+        stopEvents,
+        rafCount,
+        freshObserverTags: freshTags,
+        paintEntries: performance.getEntriesByType('paint').map((e) => ({
+          name: e.name,
+          startTime: e.startTime,
+        })),
         delay,
         userAgent: navigator.userAgent,
         environment: {
