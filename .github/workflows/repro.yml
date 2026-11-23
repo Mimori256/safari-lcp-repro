@@ -50,3 +50,35 @@ jobs:
           system_profiler SPDisplaysDataType 2>&1 | head -25
       - name: Run repro
         run: npm run repro
+  # Is it already fixed upstream? Same repro on Safari Technology Preview.
+  repro-tp:
+    name: repro on Safari Technology Preview (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm install
+      - name: Install Safari Technology Preview
+        run: brew install --cask safari-technology-preview
+      - name: Show versions
+        run: |
+          set +e
+          sw_vers
+          STP="/Applications/Safari Technology Preview.app/Contents"
+          for k in CFBundleShortVersionString CFBundleVersion LSMinimumSystemVersion; do
+            printf '%s = ' $k; defaults read "$STP/Info" $k
+          done
+          ls "$STP/MacOS" | head
+          "$STP/MacOS/safaridriver" --version
+      - name: Enable safaridriver (stable and TP)
+        run: |
+          sudo safaridriver --enable
+          sudo "/Applications/Safari Technology Preview.app/Contents/MacOS/safaridriver" --enable
+      - name: Run repro on Safari Technology Preview
+        run: BROWSER=safari-tp REPEAT=3 npm run repro
