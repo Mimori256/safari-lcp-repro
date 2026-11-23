@@ -81,5 +81,19 @@ jobs:
         run: |
           sudo safaridriver --enable
           sudo "/Applications/Safari Technology Preview.app/Contents/MacOS/safaridriver" --enable
+      - name: Prepare Safari Technology Preview (first launch + remote automation)
+        run: |
+          set +e
+          echo "stable Safari AllowRemoteAutomation:"
+          defaults read com.apple.Safari AllowRemoteAutomation 2>&1
+          defaults write com.apple.SafariTechnologyPreview AllowRemoteAutomation -bool true
+          echo "STP AllowRemoteAutomation:"
+          defaults read com.apple.SafariTechnologyPreview AllowRemoteAutomation 2>&1
+          open -a "Safari Technology Preview"
+          sleep 15
+          pgrep -fl "Safari Technology Preview" || echo "STP is not running"
+          osascript -e 'tell application "Safari Technology Preview" to quit' 2>&1
+          sleep 3
+          true
       - name: Run repro on Safari Technology Preview
         run: BROWSER=safari-tp REPEAT=3 npm run repro
