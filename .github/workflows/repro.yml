@@ -20,5 +20,33 @@ jobs:
         run: sudo safaridriver --enable
       - name: Show Safari version
         run: defaults read /Applications/Safari.app/Contents/Info CFBundleShortVersionString
+      - name: Show Safari / WebKit build details
+        run: |
+          set +e
+          S=/Applications/Safari.app/Contents
+          echo "== macOS =="; sw_vers; uname -m
+          echo "== Safari Info.plist =="
+          for k in CFBundleShortVersionString CFBundleVersion LSMinimumSystemVersion; do
+            printf '%s = ' $k; defaults read $S/Info $k
+          done
+          echo "== Safari.app location / realpath =="
+          ls -ld /Applications/Safari.app; readlink -f /Applications/Safari.app
+          echo "== Frameworks bundled inside Safari.app =="
+          ls $S/Frameworks 2>&1 | head -20
+          echo "== System WebKit frameworks =="
+          for f in /System/Library/Frameworks/WebKit.framework \
+                   /System/Library/PrivateFrameworks/WebKitLegacy.framework \
+                   /System/Library/Frameworks/JavaScriptCore.framework \
+                   /System/Library/PrivateFrameworks/WebCore.framework; do
+            printf '%s: ' "$f"
+            defaults read "$f/Resources/Info" CFBundleVersion 2>&1 \
+              || defaults read "$f/Versions/A/Resources/Info" CFBundleVersion 2>&1
+          done
+          echo "== Safari linked WebKit =="
+          otool -L $S/MacOS/Safari 2>&1 | grep -iE "webkit|javascriptcore|webcore" | head
+          echo "== safaridriver =="
+          safaridriver --version 2>&1
+          echo "== display =="
+          system_profiler SPDisplaysDataType 2>&1 | head -25
       - name: Run repro
         run: npm run repro
